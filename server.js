@@ -1,5 +1,5 @@
 // =================================================================
-// FINAL, COMPLETE, AND STABLE server.js (with Database Wake-Up)
+// FINAL, COMPLETE, AND STABLE server.js FOR VIBES24 (Production Ready)
 // =================================================================
 
 const express = require('express');
@@ -19,7 +19,6 @@ app.use(cors());
 app.use(express.json());
 
 // --- DATABASE CONNECTION (Using pg Pool for Render) ---
-// This uses the DATABASE_URL you set in the Render environment variables
 const db = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
@@ -27,7 +26,7 @@ const db = new Pool({
   }
 });
 
-// Test the database connection on startup to ensure it's working
+// Test the database connection on startup
 db.connect((err, client, release) => {
     if (err) {
         return console.error('FATAL ERROR connecting to PostgreSQL database:', err.stack);
@@ -164,6 +163,8 @@ app.post('/api/verify-otp', async (req, res) => {
 // =================================================================
 // --- PROTECTED ROUTES (MEMBERS, PROFILE, UPLOAD) ---
 // =================================================================
+
+// GET ALL MEMBERS
 app.get('/api/members', authenticateToken, async (req, res) => {
     const sql = 'SELECT id, username, profile_image_url FROM users WHERE id != $1';
     try {
@@ -175,6 +176,7 @@ app.get('/api/members', authenticateToken, async (req, res) => {
     }
 });
 
+// GET SINGLE user profile
 app.get('/api/profile', authenticateToken, async (req, res) => {
     const sql = 'SELECT username, email, phone, profile_image_url FROM users WHERE id = $1';
     try {
@@ -189,6 +191,21 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
     }
 });
 
+// UPDATE user profile (text fields)
+app.put('/api/profile', authenticateToken, async (req, res) => {
+    const { username, email, phone } = req.body;
+    const sql = 'UPDATE users SET username = $1, email = $2, phone = $3 WHERE id = $4';
+    try {
+        await db.query(sql, [username, email, phone, req.user.id]);
+        return res.status(200).json({ success: true, message: 'Profile updated!' });
+    } catch (err) {
+        if (err.code === '23505') return res.status(409).json({ success: false, message: 'That email is already in use.' });
+        console.error("DB Error on PUT /api/profile:", err);
+        return res.status(500).json({ success: false, message: 'Failed to update profile.' });
+    }
+});
+
+// UPLOAD profile photo
 app.post('/api/profile/upload-photo', authenticateToken, upload.single('profile_photo'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ success: false, message: 'No photo file was uploaded.' });
@@ -203,23 +220,6 @@ app.post('/api/profile/upload-photo', authenticateToken, upload.single('profile_
         return res.status(500).json({ success: false, message: 'Failed to save photo URL.' });
     }
 });
-
-
-// =================================================================
-// --- THIS IS THE SECRET BACKDOOR TO WAKE UP THE DATABASE ---
-// =================================================================
-app.get('/api/wake-up-db', (req, res) => {
-    db.query('SELECT 1;', (err, result) => {
-        if (err) {
-            console.error("Error waking up database:", err);
-            return res.status(500).send('Error pinging database: ' + err.message);
-        }
-        console.log("SUCCESS: Database has been woken up.");
-        res.status(200).send('<h1>Database is now active. You can close this tab.</h1>');
-    });
-});
-// =================================================================
-
 
 // --- START THE SERVER ---
 const port = process.env.PORT || 3000;
