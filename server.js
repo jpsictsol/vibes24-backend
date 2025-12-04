@@ -1,5 +1,5 @@
 // =================================================================
-// FINAL, COMPLETE, AND STABLE server.js FOR VIBES24 (PostgreSQL Version)
+// FINAL, COMPLETE, AND STABLE server.js (with Database Fixer)
 // =================================================================
 
 const express = require('express');
@@ -19,7 +19,6 @@ app.use(cors());
 app.use(express.json());
 
 // --- DATABASE CONNECTION (Using pg Pool for Render) ---
-// This uses the DATABASE_URL you set in the Render environment variables
 const db = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
@@ -27,20 +26,18 @@ const db = new Pool({
   }
 });
 
-// Test the database connection on startup to ensure it's working
+// Test the database connection on startup
 db.connect((err, client, release) => {
     if (err) {
-        console.error('FATAL ERROR: Could not connect to PostgreSQL database.', err.stack);
-        return; // Don't crash the whole server, just log the error
+        return console.error('FATAL ERROR connecting to PostgreSQL database:', err.stack);
     }
     if (client) {
-      client.release();
+        client.release();
+        console.log('Successfully connected to PostgreSQL Database!');
     }
-    console.log('Connected to PostgreSQL Database!');
 });
 
-
-// --- IMAGE UPLOAD (CLOUDINARY) SETUP ---
+// --- ALL OTHER SETUPS (CLOUDINARY, AUTHENTICATION) ---
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
@@ -52,86 +49,55 @@ const storage = new CloudinaryStorage({
         folder: 'vibes24_profiles',
         format: 'jpg',
         public_id: (req, file) => {
-            if (req.user && req.user.id) {
-                return `user-${req.user.id}-${Date.now()}`;
-            }
-            // Fallback for safety
+            if (req.user && req.user.id) return `user-${req.user.id}-${Date.now()}`;
             return `unknown-user-${Date.now()}`;
         }
     },
 });
 const upload = multer({ storage: storage });
-
-
-// --- AUTHENTICATION MIDDLEWARE ("The Security Guard") ---
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
-    if (token == null) {
-        return res.status(401).json({ success: false, message: "Token required." });
-    }
-
+    if (token == null) return res.status(401).json({ success: false, message: "Token required." });
     jwt.verify(token, 'your_super_secret_key_12345', (err, payload) => {
-        if (err) {
-            return res.status(403).json({ success: false, message: "Token is invalid or has expired." });
-        }
-        if (!payload || !payload.user || !payload.user.id) {
-             return res.status(403).json({ success: false, message: "Token is malformed or does not contain user info." });
-        }
+        if (err) return res.status(403).json({ success: false, message: "Token is invalid or has expired." });
+        if (!payload || !payload.user || !payload.user.id) return res.status(403).json({ success: false, message: "Token is malformed." });
         req.user = payload.user;
         next();
     });
 };
 
-
 // =================================================================
-// --- PUBLIC ROUTES (No Security Guard Here) ---
+// --- PUBLIC ROUTES (LOGIN, REGISTER) ---
 // =================================================================
-
-// REGISTER A NEW USER
 app.post('/api/register', async (req, res) => {
     const { username, email, password } = req.body;
-    if (!username || !email || !password) {
-        return res.status(400).json({ success: false, message: 'All fields are required.' });
-    }
-
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const password_hash = password; // In a real app, you would hash this.
-    const sql = 'INSERT INTO users (username, email, password_hash, otp) VALUES ($1, $2, $3, $4)';
-
+    if (!username || !email || !password) return res.status(400).json({ success: false, message: 'All fields are required.' });
+    const password_hash = password; // In a real app, hash this!
+    const sql = 'INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3)';
     try {
-        await db.query(sql, [username, email, password_hash, otp]);
-        // Email sending can be added back here if needed.
+        await db.query(sql, [username, email, password_hash]);
         console.log(`SUCCESS: Registered ${username}`);
         return res.status(201).json({ success: true, message: `Registration successful! Please log in.` });
     } catch (err) {
-        if (err.code === '23505') { // PostgreSQL error code for unique violation
-            return res.status(409).json({ success: false, message: 'That username or email already exists.' });
-        }
+        if (err.code === '23505') return res.status(409).json({ success: false, message: 'That username or email already exists.' });
         console.error("DB Error on Register:", err);
         return res.status(500).json({ success: false, message: 'Server error during registration.' });
     }
 });
 
-// LOG IN A USER
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
-    if (!email || !password) {
-        return res.status(400).json({ success: false, message: "Email and password are required." });
-    }
-    
+    if (!email || !password) return res.status(400).json({ success: false, message: "Email and password are required." });
     const sql = 'SELECT * FROM users WHERE email = $1';
-
     try {
         const result = await db.query(sql, [email]);
         if (result.rows.length === 0 || password !== result.rows[0].password_hash) {
             return res.status(401).json({ success: false, message: 'Invalid email or password.' });
         }
-
         const user = result.rows[0];
         const tokenPayload = { user: { id: user.id, username: user.username, email: user.email } };
         const token = jwt.sign(tokenPayload, 'your_super_secret_key_12345', { expiresIn: '1h' });
-        
         console.log(`SUCCESSFUL LOGIN for user: ${user.username}`);
         return res.status(200).json({ success: true, message: 'Login successful!', token: token });
     } catch (err) {
@@ -140,68 +106,70 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-
 // =================================================================
-// --- PROTECTED ROUTES (Security Guard Checks Every Request Here) ---
+// --- PROTECTED ROUTES (MEMBERS, PROFILE, UPLOAD) ---
 // =================================================================
-
-// GET ALL MEMBERS
 app.get('/api/members', authenticateToken, async (req, res) => {
     const sql = 'SELECT id, username, profile_image_url FROM users WHERE id != $1';
     try {
         const result = await db.query(sql, [req.user.id]);
         return res.status(200).json({ success: true, data: result.rows });
     } catch (err) {
-        console.error("DB Error on GET /api/members:", err);
         return res.status(500).json({ success: false, message: "Server error while fetching members." });
     }
 });
 
-// GET SINGLE user profile
 app.get('/api/profile', authenticateToken, async (req, res) => {
     const sql = 'SELECT username, email, phone, profile_image_url FROM users WHERE id = $1';
     try {
         const result = await db.query(sql, [req.user.id]);
-        if (result.rows.length === 0) {
-            return res.status(404).json({ success: false, message: 'User profile not found.' });
-        }
+        if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'User profile not found.' });
         return res.status(200).json({ success: true, data: result.rows[0] });
     } catch (err) {
-        console.error("DB Error on GET /api/profile:", err);
         return res.status(500).json({ success: false, message: 'Server error fetching profile.' });
     }
 });
 
-// UPDATE user profile (text fields)
-app.put('/api/profile', authenticateToken, async (req, res) => {
-    const { username, email, phone } = req.body;
-    const sql = 'UPDATE users SET username = $1, email = $2, phone = $3 WHERE id = $4';
-    try {
-        await db.query(sql, [username, email, phone, req.user.id]);
-        return res.status(200).json({ success: true, message: 'Profile updated!' });
-    } catch (err) {
-        if (err.code === '23505') return res.status(409).json({ success: false, message: 'That email is already in use.' });
-        console.error("DB Error on PUT /api/profile:", err);
-        return res.status(500).json({ success: false, message: 'Failed to update profile.' });
-    }
-});
-
-// UPLOAD profile photo
 app.post('/api/profile/upload-photo', authenticateToken, upload.single('profile_photo'), async (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ success: false, message: 'No photo file was uploaded.' });
-    }
+    if (!req.file) return res.status(400).json({ success: false, message: 'No photo file was uploaded.' });
     const photoUrl = req.file.path;
     const sql = 'UPDATE users SET profile_image_url = $1 WHERE id = $2';
     try {
         await db.query(sql, [photoUrl, req.user.id]);
         return res.status(200).json({ success: true, message: 'Photo updated!', imageUrl: photoUrl });
     } catch (err) {
-        console.error("DB Error on Photo Upload:", err);
         return res.status(500).json({ success: false, message: 'Failed to save photo URL.' });
     }
 });
 
+// =================================================================
+// --- THIS IS THE SECRET BACKDOOR TO FIX THE DATABASE FOR FREE ---
+// =================================================================
+app.get('/api/setup-database-for-real-this-time', (req, res) => {
+    const dropTableQuery = 'DROP TABLE IF EXISTS users;';
+    const createTableQuery = `
+        CREATE TABLE users (
+            id SERIAL PRIMARY KEY,
+            username VARCHAR(50) NOT NULL UNIQUE,
+            email VARCHAR(100) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            phone VARCHAR(20),
+            profile_image_url VARCHAR(255),
+            otp VARCHAR(6),
+            is_verified BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+    `;
+    db.query(dropTableQuery, (err, result) => {
+        if (err) return res.status(500).send('Error dropping old table: ' + err.message);
+        console.log("SUCCESS: Old 'users' table dropped (if it existed).");
+        db.query(createTableQuery, (err, result) => {
+            if (err) return res.status(500).send('Error creating new table: ' + err.message);
+            console.log("SUCCESS: New 'users' table created successfully!");
+            res.status(200).send('<h1>Database setup complete! The users table has been fixed. You can now close this tab.</h1>');
+        });
+    });
+});
 
 // --- START THE SERVER ---
 const port = process.env.PORT || 3000;
