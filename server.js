@@ -19,11 +19,13 @@ app.use(cors());
 app.use(express.json());
 
 // --- DATABASE CONNECTION ---
-const db = mysql.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: '',
-    database: 'vibes24_app'
+// NEW POSTGRESQL CODE TO ADD
+const { Pool } = require('pg');
+const db = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
 });
 
 db.connect((err) => {
