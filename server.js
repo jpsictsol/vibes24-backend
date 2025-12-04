@@ -1,6 +1,6 @@
 // =================================================================
 // FINAL, COMPLETE, AND STABLE server.js (with Database Fixer)
-// ================================================================
+// =================================================================
 
 const express = require('express');
 const { Pool } = require('pg'); // Use the pg Pool for PostgreSQL
@@ -26,7 +26,7 @@ const db = new Pool({
   }
 });
 
-// Test the database connection on startup to ensure it's working
+// Test the database connection on startup
 db.connect((err, client, release) => {
     if (err) {
         return console.error('FATAL ERROR connecting to PostgreSQL database:', err.stack);
@@ -146,22 +146,76 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
+// VERIFY OTP
+app.post('/api/verify-otp', async (req, res) => {
+    const { email, otp } = req.body;
+    if (!email || !otp) return res.status(400).json({ success: false, message: 'Email and OTP are required.' });
+
+    const sql = 'SELECT * FROM users WHERE email = $1 AND otp = $2';
+    try {
+        const result = await db.query(sql, [email, otp]);
+        if (result.rows.length > 0) {
+            const clearOtpSql = 'UPDATE users SET otp = NULL, is_verified = 1 WHERE email = $1';
+            await db.query(clearOtpSql, [email]);
+            return res.status(200).json({ success: true, message: 'Account verified successfully!' });
+        } else {
+            return res.status(400).json({ success: false, message: 'Invalid OTP or email.' });
+        }
+    } catch (err) {
+        console.error("DB Error on Verify OTP:", err);
+        return res.status(500).json({ success: false, message: 'Server error during OTP verification.' });
+    }
+});
+
 
 // =================================================================
 // --- PROTECTED ROUTES (MEMBERS, PROFILE, UPLOAD) ---
 // =================================================================
-app.get('/api/members', authenticateToken, async (req, res) => { /* ... your correct members logic ... */ });
-app.get('/api/profile', authenticateToken, async (req, res) => { /* ... your correct profile logic ... */ });
-app.post('/api/profile/upload-photo', authenticateToken, upload.single('profile_photo'), async (req, res) => { /* ... your correct upload logic ... */ });
+// ... (All your other working routes: GET /api/members, GET /api/profile, etc.)
+app.get('/api/members', authenticateToken, async (req, res) => {
+    const sql = 'SELECT id, username, profile_image_url FROM users WHERE id != $1';
+    try {
+        const result = await db.query(sql, [req.user.id]);
+        return res.status(200).json({ success: true, data: result.rows });
+    } catch (err) {
+        console.error("DB Error on GET /api/members:", err);
+        return res.status(500).json({ success: false, message: "Server error while fetching members." });
+    }
+});
+app.get('/api/profile', authenticateToken, async (req, res) => {
+    const sql = 'SELECT username, email, phone, profile_image_url FROM users WHERE id = $1';
+    try {
+        const result = await db.query(sql, [req.user.id]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'User profile not found.' });
+        }
+        return res.status(200).json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        console.error("DB Error on GET /api/profile:", err);
+        return res.status(500).json({ success: false, message: 'Server error fetching profile.' });
+    }
+});
+app.post('/api/profile/upload-photo', authenticateToken, upload.single('profile_photo'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ success: false, message: 'No photo file was uploaded.' });
+    }
+    const photoUrl = req.file.path;
+    const sql = 'UPDATE users SET profile_image_url = $1 WHERE id = $2';
+    try {
+        await db.query(sql, [photoUrl, req.user.id]);
+        return res.status(200).json({ success: true, message: 'Photo updated!', imageUrl: photoUrl });
+    } catch (err) {
+        console.error("DB Error on Photo Upload:", err);
+        return res.status(500).json({ success: false, message: 'Failed to save photo URL.' });
+    }
+});
 
 // =================================================================
 // --- THIS IS THE SECRET BACKDOOR TO FIX THE DATABASE FOR FREE ---
 // =================================================================
 app.get('/api/setup-database-for-real-this-time', (req, res) => {
     const dropTableQuery = 'DROP TABLE IF EXISTS users;';
-
-    // This is the complete, correct blueprint for your table
-    const createTableQuery = \`
+    const createTableQuery = `
         CREATE TABLE users (
             id SERIAL PRIMARY KEY,
             username VARCHAR(50) NOT NULL UNIQUE,
@@ -173,17 +227,13 @@ app.get('/api/setup-database-for-real-this-time', (req, res) => {
             is_verified BOOLEAN DEFAULT FALSE,
             created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
-    \`;
-
-    // First, drop the old table
+    `;
     db.query(dropTableQuery, (err, result) => {
         if (err) {
             console.error("Error dropping table:", err);
             return res.status(500).send('Error dropping old table: ' + err.message);
         }
         console.log("SUCCESS: Old 'users' table dropped (if it existed).");
-
-        // After dropping it, create the new, perfect table
         db.query(createTableQuery, (err, result) => {
             if (err) {
                 console.error("Error creating table:", err);
@@ -200,5 +250,6 @@ app.get('/api/setup-database-for-real-this-time', (req, res) => {
 // --- START THE SERVER ---
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
-    console.log(\`Server is running and ready for connections on port \${port}\`);
+    console.log(`Server is running and ready for connections on port ${port}`);
 });
+
