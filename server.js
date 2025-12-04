@@ -1,9 +1,9 @@
 // =================================================================
-// FINAL, COMPLETE, AND STABLE server.js (Correctly Structured)
+// FINAL, COMPLETE, AND STABLE server.js (with Database Wake-Up)
 // =================================================================
 
 const express = require('express');
-const { Pool } = require('pg');
+const { Pool } = require('pg'); // Use the pg Pool for PostgreSQL
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
@@ -18,21 +18,27 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- STABLE DATABASE CONNECTION ---
+// --- DATABASE CONNECTION (Using pg Pool for Render) ---
+// This uses the DATABASE_URL you set in the Render environment variables
 const db = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
     rejectUnauthorized: false
   }
 });
+
+// Test the database connection on startup to ensure it's working
 db.connect((err, client, release) => {
-    if (err) return console.error('FATAL ERROR connecting to PostgreSQL database:', err.stack);
-    if (client) client.release();
+    if (err) {
+        return console.error('FATAL ERROR connecting to PostgreSQL database:', err.stack);
+    }
+    if (client) {
+      client.release();
+    }
     console.log('Successfully connected to PostgreSQL Database!');
 });
 
-// --- STABLE EMAIL TRANSPORTER (THE "MAILMAN") ---
-// We create the transporter only ONCE when the server starts. This is the fix.
+// --- STABLE EMAIL TRANSPORTER ---
 const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: {
@@ -41,7 +47,7 @@ const transporter = nodemailer.createTransport({
     }
 });
 
-// --- ALL OTHER SETUPS (CLOUDINARY, AUTH) ARE STABLE ---
+// --- IMAGE UPLOAD (CLOUDINARY) SETUP ---
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     api_key: process.env.CLOUDINARY_API_KEY,
@@ -59,60 +65,60 @@ const storage = new CloudinaryStorage({
     },
 });
 const upload = multer({ storage: storage });
+
+// --- AUTHENTICATION MIDDLEWARE ("The Security Guard") ---
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
-    if (token == null) return res.status(401).json({ success: false, message: "Token required." });
+    if (token == null) {
+        return res.status(401).json({ success: false, message: "Token required." });
+    }
     jwt.verify(token, 'your_super_secret_key_12345', (err, payload) => {
-        if (err) return res.status(403).json({ success: false, message: "Token is invalid or has expired." });
-        if (!payload || !payload.user || !payload.user.id) return res.status(403).json({ success: false, message: "Token is malformed." });
+        if (err) {
+            return res.status(403).json({ success: false, message: "Token is invalid or has expired." });
+        }
+        if (!payload || !payload.user || !payload.user.id) {
+             return res.status(403).json({ success: false, message: "Token is malformed or does not contain user info." });
+        }
         req.user = payload.user;
         next();
     });
 };
 
 // =================================================================
-// --- PUBLIC ROUTES ---
+// --- PUBLIC ROUTES (LOGIN, REGISTER, OTP) ---
 // =================================================================
 
-// REGISTER A NEW USER
+// REGISTER A NEW USER (with OTP email)
 app.post('/api/register', async (req, res) => {
     const { username, email, password } = req.body;
-    if (!username || !email || !password) return res.status(400).json({ success: false, message: 'All fields are required.' });
-
+    if (!username || !email || !password) {
+        return res.status(400).json({ success: false, message: 'All fields are required.' });
+    }
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const password_hash = password;
+    const password_hash = password; // In a real app, you would hash this.
     const sql = 'INSERT INTO users (username, email, password_hash, otp) VALUES ($1, $2, $3, $4)';
-
     try {
         await db.query(sql, [username, email, password_hash, otp]);
-
         const mailOptions = {
             from: `"Vibes24" <${process.env.GMAIL_EMAIL}>`,
             to: email,
             subject: 'Your Vibes24 Verification Code',
             text: `Welcome to Vibes24! Your One-Time Password is: ${otp}`
         };
-
-        // We now use the single, stable transporter created above.
         await transporter.sendMail(mailOptions);
-        
         console.log(`SUCCESS: Registered ${username} and sent OTP to ${email}`);
         return res.status(201).json({ success: true, message: `Registration successful! An OTP has been sent to ${email}.` });
-
     } catch (err) {
-        if (err.code === '23505') return res.status(409).json({ success: false, message: 'That username or email already exists.' });
+        if (err.code === '23505') { // PostgreSQL error code for unique violation
+            return res.status(409).json({ success: false, message: 'That username or email already exists.' });
+        }
         console.error("DB or Mail Error on Register:", err);
         return res.status(500).json({ success: false, message: 'Server error during registration.' });
     }
 });
 
-// ALL OTHER ROUTES (LOGIN, VERIFY-OTP, MEMBERS, PROFILE, UPLOAD) ARE CORRECT AND STABLE
-// ... app.post('/api/login', ...)
-// ... app.post('/api/verify-otp', ...)
-// ... app.get('/api/members', ...)
-// ... app.get('/api/profile', ...)
-// ... app.post('/api/profile/upload-photo', ...)
+// LOG IN A USER
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
     if (!email || !password) {
@@ -134,6 +140,8 @@ app.post('/api/login', async (req, res) => {
         return res.status(500).json({ success: false, message: 'Server error during login.' });
     }
 });
+
+// VERIFY OTP
 app.post('/api/verify-otp', async (req, res) => {
     const { email, otp } = req.body;
     if (!email || !otp) return res.status(400).json({ success: false, message: 'Email and OTP are required.' });
@@ -152,6 +160,10 @@ app.post('/api/verify-otp', async (req, res) => {
         return res.status(500).json({ success: false, message: 'Server error during OTP verification.' });
     }
 });
+
+// =================================================================
+// --- PROTECTED ROUTES (MEMBERS, PROFILE, UPLOAD) ---
+// =================================================================
 app.get('/api/members', authenticateToken, async (req, res) => {
     const sql = 'SELECT id, username, profile_image_url FROM users WHERE id != $1';
     try {
@@ -162,6 +174,7 @@ app.get('/api/members', authenticateToken, async (req, res) => {
         return res.status(500).json({ success: false, message: "Server error while fetching members." });
     }
 });
+
 app.get('/api/profile', authenticateToken, async (req, res) => {
     const sql = 'SELECT username, email, phone, profile_image_url FROM users WHERE id = $1';
     try {
@@ -175,6 +188,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
         return res.status(500).json({ success: false, message: 'Server error fetching profile.' });
     }
 });
+
 app.post('/api/profile/upload-photo', authenticateToken, upload.single('profile_photo'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ success: false, message: 'No photo file was uploaded.' });
@@ -189,6 +203,23 @@ app.post('/api/profile/upload-photo', authenticateToken, upload.single('profile_
         return res.status(500).json({ success: false, message: 'Failed to save photo URL.' });
     }
 });
+
+
+// =================================================================
+// --- THIS IS THE SECRET BACKDOOR TO WAKE UP THE DATABASE ---
+// =================================================================
+app.get('/api/wake-up-db', (req, res) => {
+    db.query('SELECT 1;', (err, result) => {
+        if (err) {
+            console.error("Error waking up database:", err);
+            return res.status(500).send('Error pinging database: ' + err.message);
+        }
+        console.log("SUCCESS: Database has been woken up.");
+        res.status(200).send('<h1>Database is now active. You can close this tab.</h1>');
+    });
+});
+// =================================================================
+
 
 // --- START THE SERVER ---
 const port = process.env.PORT || 3000;
