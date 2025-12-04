@@ -1,6 +1,6 @@
 // =================================================================
 // FINAL, COMPLETE, AND STABLE server.js (with Database Fixer)
-// =================================================================
+// ================================================================
 
 const express = require('express');
 const { Pool } = require('pg'); // Use the pg Pool for PostgreSQL
