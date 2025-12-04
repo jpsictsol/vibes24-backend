@@ -1,5 +1,5 @@
 // =================================================================
-// FINAL, COMPLETE, AND STABLE server.js FOR VIBES24 (Production Ready)
+// FINAL, COMPLETE, AND STABLE server.js FOR VIBES24 (PostgreSQL Version)
 // =================================================================
 
 const express = require('express');
@@ -9,6 +9,7 @@ const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
 // All other required packages
+const nodemailer = require('nodemailer');
 const multer = require('multer');
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const cloudinary = require('cloudinary').v2;
@@ -18,6 +19,7 @@ app.use(cors());
 app.use(express.json());
 
 // --- DATABASE CONNECTION (Using pg Pool for Render) ---
+// This uses the DATABASE_URL you set in the Render environment variables
 const db = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
@@ -25,7 +27,7 @@ const db = new Pool({
   }
 });
 
-// Test the database connection on startup
+// Test the database connection on startup to ensure it's working
 db.connect((err, client, release) => {
     if (err) {
         return console.error('FATAL ERROR connecting to PostgreSQL database:', err.stack);
@@ -79,36 +81,63 @@ const authenticateToken = (req, res, next) => {
 
 
 // =================================================================
-// --- PUBLIC ROUTES (LOGIN, REGISTER) ---
+// --- PUBLIC ROUTES (LOGIN, REGISTER, OTP) ---
 // =================================================================
+
+// REGISTER A NEW USER (with OTP email)
 app.post('/api/register', async (req, res) => {
     const { username, email, password } = req.body;
-    if (!username || !email || !password) return res.status(400).json({ success: false, message: 'All fields are required.' });
-    const password_hash = password; // In a real app, hash this!
-    const sql = 'INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3)';
+    if (!username || !email || !password) {
+        return res.status(400).json({ success: false, message: 'All fields are required.' });
+    }
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const password_hash = password; // In a real app, you would hash this.
+    const sql = 'INSERT INTO users (username, email, password_hash, otp) VALUES ($1, $2, $3, $4)';
+
     try {
-        await db.query(sql, [username, email, password_hash]);
-        console.log(`SUCCESS: Registered ${username}`);
-        return res.status(201).json({ success: true, message: `Registration successful! Please log in.` });
+        await db.query(sql, [username, email, password_hash, otp]);
+
+        const mailOptions = {
+            from: `"Vibes24" <${process.env.GMAIL_EMAIL}>`,
+            to: email,
+            subject: 'Your Vibes24 Verification Code',
+            text: `Welcome to Vibes24! Your One-Time Password is: ${otp}`
+        };
+
+        await transporter.sendMail(mailOptions);
+        
+        console.log(`SUCCESS: Registered ${username} and sent OTP to ${email}`);
+        return res.status(201).json({ success: true, message: `Registration successful! An OTP has been sent to ${email}.` });
+
     } catch (err) {
-        if (err.code === '23505') return res.status(409).json({ success: false, message: 'That username or email already exists.' });
-        console.error("DB Error on Register:", err);
+        if (err.code === '23505') { // PostgreSQL error code for unique violation
+            return res.status(409).json({ success: false, message: 'That username or email already exists.' });
+        }
+        console.error("DB or Mail Error on Register:", err);
         return res.status(500).json({ success: false, message: 'Server error during registration.' });
     }
 });
 
+// LOG IN A USER
 app.post('/api/login', async (req, res) => {
     const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ success: false, message: "Email and password are required." });
+    if (!email || !password) {
+        return res.status(400).json({ success: false, message: "Email and password are required." });
+    }
+    
     const sql = 'SELECT * FROM users WHERE email = $1';
+
     try {
         const result = await db.query(sql, [email]);
         if (result.rows.length === 0 || password !== result.rows[0].password_hash) {
             return res.status(401).json({ success: false, message: 'Invalid email or password.' });
         }
+
         const user = result.rows[0];
         const tokenPayload = { user: { id: user.id, username: user.username, email: user.email } };
         const token = jwt.sign(tokenPayload, 'your_super_secret_key_12345', { expiresIn: '1h' });
+        
         console.log(`SUCCESSFUL LOGIN for user: ${user.username}`);
         return res.status(200).json({ success: true, message: 'Login successful!', token: token });
     } catch (err) {
@@ -117,20 +146,45 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
+// VERIFY OTP
+app.post('/api/verify-otp', async (req, res) => {
+    const { email, otp } = req.body;
+    if (!email || !otp) return res.status(400).json({ success: false, message: 'Email and OTP are required.' });
+
+    const sql = 'SELECT * FROM users WHERE email = $1 AND otp = $2';
+    try {
+        const result = await db.query(sql, [email, otp]);
+        if (result.rows.length > 0) {
+            const clearOtpSql = 'UPDATE users SET otp = NULL, is_verified = 1 WHERE email = $1';
+            await db.query(clearOtpSql, [email]);
+            return res.status(200).json({ success: true, message: 'Account verified successfully!' });
+        } else {
+            return res.status(400).json({ success: false, message: 'Invalid OTP or email.' });
+        }
+    } catch (err) {
+        console.error("DB Error on Verify OTP:", err);
+        return res.status(500).json({ success: false, message: 'Server error during OTP verification.' });
+    }
+});
+
 
 // =================================================================
 // --- PROTECTED ROUTES (MEMBERS, PROFILE, UPLOAD) ---
 // =================================================================
+
+// GET ALL MEMBERS
 app.get('/api/members', authenticateToken, async (req, res) => {
     const sql = 'SELECT id, username, profile_image_url FROM users WHERE id != $1';
     try {
         const result = await db.query(sql, [req.user.id]);
         return res.status(200).json({ success: true, data: result.rows });
     } catch (err) {
+        console.error("DB Error on GET /api/members:", err);
         return res.status(500).json({ success: false, message: "Server error while fetching members." });
     }
 });
 
+// GET SINGLE user profile
 app.get('/api/profile', authenticateToken, async (req, res) => {
     const sql = 'SELECT username, email, phone, profile_image_url FROM users WHERE id = $1';
     try {
@@ -140,10 +194,27 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
         }
         return res.status(200).json({ success: true, data: result.rows[0] });
     } catch (err) {
+        console.error("DB Error on GET /api/profile:", err);
         return res.status(500).json({ success: false, message: 'Server error fetching profile.' });
     }
 });
 
+// UPDATE user profile (text fields)
+app.put('/api/profile', authenticateToken, async (req, res) => {
+    const { username, email, phone } = req.body;
+    const sql = 'UPDATE users SET username = $1, email = $2, phone = $3 WHERE id = $4';
+    try {
+        await db.query(sql, [username, email, phone, req.user.id]);
+        // We can optionally create and send back a new token if the email/username changed
+        return res.status(200).json({ success: true, message: 'Profile updated!' });
+    } catch (err) {
+        if (err.code === '23505') return res.status(409).json({ success: false, message: 'That email is already in use.' });
+        console.error("DB Error on PUT /api/profile:", err);
+        return res.status(500).json({ success: false, message: 'Failed to update profile.' });
+    }
+});
+
+// UPLOAD profile photo
 app.post('/api/profile/upload-photo', authenticateToken, upload.single('profile_photo'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ success: false, message: 'No photo file was uploaded.' });
@@ -154,6 +225,7 @@ app.post('/api/profile/upload-photo', authenticateToken, upload.single('profile_
         await db.query(sql, [photoUrl, req.user.id]);
         return res.status(200).json({ success: true, message: 'Photo updated!', imageUrl: photoUrl });
     } catch (err) {
+        console.error("DB Error on Photo Upload:", err);
         return res.status(500).json({ success: false, message: 'Failed to save photo URL.' });
     }
 });
