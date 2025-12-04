@@ -1,5 +1,5 @@
 // =================================================================
-// FINAL, COMPLETE, AND STABLE server.js (with Database Fixer)
+// FINAL, COMPLETE, AND STABLE server.js FOR VIBES24 (Production Ready)
 // =================================================================
 
 const express = require('express');
@@ -37,7 +37,6 @@ db.connect((err, client, release) => {
     console.log('Successfully connected to PostgreSQL Database!');
 });
 
-
 // --- IMAGE UPLOAD (CLOUDINARY) SETUP ---
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -56,7 +55,6 @@ const storage = new CloudinaryStorage({
     },
 });
 const upload = multer({ storage: storage });
-
 
 // --- AUTHENTICATION MIDDLEWARE ("The Security Guard") ---
 const authenticateToken = (req, res, next) => {
@@ -77,7 +75,6 @@ const authenticateToken = (req, res, next) => {
         next();
     });
 };
-
 
 // =================================================================
 // --- PUBLIC ROUTES (LOGIN, REGISTER, OTP) ---
@@ -167,11 +164,11 @@ app.post('/api/verify-otp', async (req, res) => {
     }
 });
 
-
 // =================================================================
 // --- PROTECTED ROUTES (MEMBERS, PROFILE, UPLOAD) ---
 // =================================================================
-// ... (All your other working routes: GET /api/members, GET /api/profile, etc.)
+
+// GET ALL MEMBERS
 app.get('/api/members', authenticateToken, async (req, res) => {
     const sql = 'SELECT id, username, profile_image_url FROM users WHERE id != $1';
     try {
@@ -182,6 +179,8 @@ app.get('/api/members', authenticateToken, async (req, res) => {
         return res.status(500).json({ success: false, message: "Server error while fetching members." });
     }
 });
+
+// GET SINGLE user profile
 app.get('/api/profile', authenticateToken, async (req, res) => {
     const sql = 'SELECT username, email, phone, profile_image_url FROM users WHERE id = $1';
     try {
@@ -195,6 +194,22 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
         return res.status(500).json({ success: false, message: 'Server error fetching profile.' });
     }
 });
+
+// UPDATE user profile (text fields)
+app.put('/api/profile', authenticateToken, async (req, res) => {
+    const { username, email, phone } = req.body;
+    const sql = 'UPDATE users SET username = $1, email = $2, phone = $3 WHERE id = $4';
+    try {
+        await db.query(sql, [username, email, phone, req.user.id]);
+        return res.status(200).json({ success: true, message: 'Profile updated!' });
+    } catch (err) {
+        if (err.code === '23505') return res.status(409).json({ success: false, message: 'That email is already in use.' });
+        console.error("DB Error on PUT /api/profile:", err);
+        return res.status(500).json({ success: false, message: 'Failed to update profile.' });
+    }
+});
+
+// UPLOAD profile photo
 app.post('/api/profile/upload-photo', authenticateToken, upload.single('profile_photo'), async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ success: false, message: 'No photo file was uploaded.' });
@@ -210,46 +225,8 @@ app.post('/api/profile/upload-photo', authenticateToken, upload.single('profile_
     }
 });
 
-// =================================================================
-// --- THIS IS THE SECRET BACKDOOR TO FIX THE DATABASE FOR FREE ---
-// =================================================================
-app.get('/api/setup-database-for-real-this-time', (req, res) => {
-    const dropTableQuery = 'DROP TABLE IF EXISTS users;';
-    const createTableQuery = `
-        CREATE TABLE users (
-            id SERIAL PRIMARY KEY,
-            username VARCHAR(50) NOT NULL UNIQUE,
-            email VARCHAR(100) NOT NULL UNIQUE,
-            password_hash VARCHAR(255) NOT NULL,
-            phone VARCHAR(20),
-            profile_image_url VARCHAR(255),
-            otp VARCHAR(6),
-            is_verified BOOLEAN DEFAULT FALSE,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        );
-    `;
-    db.query(dropTableQuery, (err, result) => {
-        if (err) {
-            console.error("Error dropping table:", err);
-            return res.status(500).send('Error dropping old table: ' + err.message);
-        }
-        console.log("SUCCESS: Old 'users' table dropped (if it existed).");
-        db.query(createTableQuery, (err, result) => {
-            if (err) {
-                console.error("Error creating table:", err);
-                return res.status(500).send('Error creating new table: ' + err.message);
-            }
-            console.log("SUCCESS: New 'users' table created successfully!");
-            res.status(200).send('<h1>Database setup complete! The users table has been fixed. You can now close this tab.</h1>');
-        });
-    });
-});
-// =================================================================
-
-
 // --- START THE SERVER ---
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
     console.log(`Server is running and ready for connections on port ${port}`);
 });
-
