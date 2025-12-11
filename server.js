@@ -1,6 +1,6 @@
 // =================================================================
-// FINAL, STABLE server.js for RENDER POSTGRESQL (NO OTP, with DB Fixer)
-// Following user's direct instructions.
+// FINAL, COMPLETE, AND STABLE server.js FOR VIBES24 (Production Ready)
+// NO OTP, for PostgreSQL
 // =================================================================
 
 const express = require('express');
@@ -105,39 +105,44 @@ app.post('/api/login', async (req, res) => {
 // =================================================================
 // --- PROTECTED ROUTES (Needed for after login) ---
 // =================================================================
-app.get('/api/members', authenticateToken, async (req, res) => { /* ... your correct members logic ... */ });
-app.get('/api/profile', authenticateToken, async (req, res) => { /* ... your correct profile logic ... */ });
-app.post('/api/profile/upload-photo', authenticateToken, upload.single('profile_photo'), async (req, res) => { /* ... your correct upload logic ... */ });
-
-
-// =================================================================
-// --- THIS IS THE SECRET BACKDOOR TO FIX THE DATABASE FOR FREE ---
-// =================================================================
-app.get('/api/setup-simple-database', (req, res) => {
-    const dropTableQuery = 'DROP TABLE IF EXISTS users;';
-    const createTableQuery = `
-        CREATE TABLE users (
-            id SERIAL PRIMARY KEY,
-            username VARCHAR(50) NOT NULL UNIQUE,
-            email VARCHAR(100) NOT NULL UNIQUE,
-            password_hash VARCHAR(255) NOT NULL,
-            phone VARCHAR(20),
-            profile_image_url VARCHAR(255),
-            is_verified BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        );
-    `;
-    db.query(dropTableQuery, (err, result) => {
-        if (err) return res.status(500).send('Error dropping old table: ' + err.message);
-        console.log("SUCCESS: Old 'users' table dropped.");
-        db.query(createTableQuery, (err, result) => {
-            if (err) return res.status(500).send('Error creating new table: ' + err.message);
-            console.log("SUCCESS: New, simpler 'users' table created!");
-            res.status(200).send('<h1>Database setup complete! The new, simpler users table has been created.</h1>');
-        });
-    });
+app.get('/api/members', authenticateToken, async (req, res) => {
+    const sql = 'SELECT id, username, profile_image_url FROM users WHERE id != $1';
+    try {
+        const result = await db.query(sql, [req.user.id]);
+        return res.status(200).json({ success: true, data: result.rows });
+    } catch (err) {
+        console.error("DB Error on GET /api/members:", err);
+        return res.status(500).json({ success: false, message: "Server error while fetching members." });
+    }
 });
-// =================================================================
+app.get('/api/profile', authenticateToken, async (req, res) => {
+    const sql = 'SELECT username, email, phone, profile_image_url FROM users WHERE id = $1';
+    try {
+        const result = await db.query(sql, [req.user.id]);
+        if (result.rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'User profile not found.' });
+        }
+        return res.status(200).json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        console.error("DB Error on GET /api/profile:", err);
+        return res.status(500).json({ success: false, message: 'Server error fetching profile.' });
+    }
+});
+app.post('/api/profile/upload-photo', authenticateToken, upload.single('profile_photo'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ success: false, message: 'No photo file was uploaded.' });
+    }
+    const photoUrl = req.file.path;
+    const sql = 'UPDATE users SET profile_image_url = $1 WHERE id = $2';
+    try {
+        await db.query(sql, [photoUrl, req.user.id]);
+        return res.status(200).json({ success: true, message: 'Photo updated!', imageUrl: photoUrl });
+    } catch (err) {
+        console.error("DB Error on Photo Upload:", err);
+        return res.status(500).json({ success: false, message: 'Failed to save photo URL.' });
+    }
+});
+
 
 // --- START THE SERVER ---
 const port = process.env.PORT || 3000;
