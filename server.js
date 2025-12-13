@@ -1,5 +1,6 @@
 // =================================================================
-// FINAL, STABLE server.js for RENDER POSTGRESQL (with DB Fixer)
+// FINAL, COMPLETE, AND STABLE server.js FOR VIBES24 (Production Ready)
+// NO OTP, for PostgreSQL, NO BACKDOOR
 // =================================================================
 
 const express = require('express');
@@ -8,6 +9,7 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
+// All other packages needed for all features
 const multer = require('multer');
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const cloudinary = require('cloudinary').v2;
@@ -97,41 +99,55 @@ app.get('/api/match-candidates', authenticateToken, async (req, res) => {
         return res.status(500).json({ success: false, message: "Server error while fetching candidates." });
     }
 });
-// ... other protected routes follow the same async/await and try/catch pattern ...
-app.get('/api/user/:id', authenticateToken, async (req, res) => { /* ... */ });
-app.get('/api/profile', authenticateToken, async (req, res) => { /* ... */ });
-app.put('/api/profile', authenticateToken, async (req, res) => { /* ... */ });
-app.post('/api/profile/upload-photo', authenticateToken, upload.single('profile_photo'), async (req, res) => { /* ... */ });
 
-
-// =================================================================
-// --- THIS IS THE SECRET BACKDOOR TO CREATE THE DATABASE ON RENDER ---
-// =================================================================
-app.get('/api/setup-live-database', (req, res) => {
-    const dropTableQuery = 'DROP TABLE IF EXISTS users;';
-    const createTableQuery = `
-        CREATE TABLE users (
-            id SERIAL PRIMARY KEY,
-            username VARCHAR(50) NOT NULL UNIQUE,
-            email VARCHAR(100) NOT NULL UNIQUE,
-            password_hash VARCHAR(255) NOT NULL,
-            phone VARCHAR(20),
-            profile_image_url VARCHAR(255),
-            is_verified BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        );
-    `;
-    db.query(dropTableQuery, (err, result) => {
-        if (err) return res.status(500).send('Error dropping old table: ' + err.message);
-        console.log("SUCCESS: Old 'users' table dropped.");
-        db.query(createTableQuery, (err, result) => {
-            if (err) return res.status(500).send('Error creating new table: ' + err.message);
-            console.log("SUCCESS: New, simpler 'users' table created!");
-            res.status(200).send('<h1>Live Database setup complete! The new, simpler users table has been created.</h1>');
-        });
-    });
+app.get('/api/user/:id', authenticateToken, async (req, res) => {
+    const userIdToFetch = req.params.id;
+    const sql = 'SELECT id, username, email, phone, profile_image_url FROM users WHERE id = $1';
+    try {
+        const result = await db.query(sql, [userIdToFetch]);
+        if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'User not found.' });
+        return res.status(200).json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: 'Server error fetching user profile.' });
+    }
 });
-// =================================================================
+
+app.get('/api/profile', authenticateToken, async (req, res) => {
+    const sql = 'SELECT username, email, phone, profile_image_url FROM users WHERE id = $1';
+    try {
+        const result = await db.query(sql, [req.user.id]);
+        if (result.rows.length === 0) return res.status(404).json({ success: false, message: 'User profile not found.' });
+        return res.status(200).json({ success: true, data: result.rows[0] });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: 'Server error fetching profile.' });
+    }
+});
+
+app.put('/api/profile', authenticateToken, async (req, res) => {
+    const { username, email, phone } = req.body;
+    const sql = 'UPDATE users SET username = $1, email = $2, phone = $3 WHERE id = $4';
+    try {
+        await db.query(sql, [username, email, phone, req.user.id]);
+        return res.status(200).json({ success: true, message: 'Profile updated!' });
+    } catch (err) {
+        if (err.code === '23505') return res.status(409).json({ success: false, message: 'That email is already in use.' });
+        return res.status(500).json({ success: false, message: 'Failed to update profile.' });
+    }
+});
+
+app.post('/api/profile/upload-photo', authenticateToken, upload.single('profile_photo'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ success: false, message: 'No photo file was uploaded.' });
+    }
+    const photoUrl = req.file.path;
+    const sql = 'UPDATE users SET profile_image_url = $1 WHERE id = $2';
+    try {
+        await db.query(sql, [photoUrl, req.user.id]);
+        return res.status(200).json({ success: true, message: 'Photo updated!', imageUrl: photoUrl });
+    } catch (err) {
+        return res.status(500).json({ success: false, message: 'Failed to save photo URL.' });
+    }
+});
 
 // --- START THE SERVER ---
 const port = process.env.PORT || 3000;
